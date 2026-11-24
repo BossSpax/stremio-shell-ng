@@ -24,6 +24,55 @@
     var lastSentJson = null;
     var sendTimer = null;
 
+    // ---------- picture (shader) settings ----------
+    var PICTURE_KEY = 'stremioPicture.v1';
+    var PICTURE_SLIDERS = [
+        // key, label, min, max, step, neutral
+        ['denoise', 'Denoise', 0, 0.15, 0.005, 0],
+        ['sharpness', 'Sharpen', 0, 1.5, 0.05, 0],
+        ['warmth', 'Warmth', -0.5, 0.5, 0.01, 0],
+        ['tint', 'Tint (green ↔ magenta)', -0.3, 0.3, 0.01, 0],
+        ['brightness', 'Brightness', -0.5, 0.5, 0.01, 0],
+        ['contrast', 'Contrast', -0.5, 0.8, 0.01, 0],
+        ['shadows', 'Shadows', -0.4, 0.6, 0.01, 0],
+        ['saturation', 'Saturation', 0, 2, 0.01, 1]
+    ];
+    var CAM_FIX = {
+        denoise: 0.04, sharpness: 0.3, warmth: 0.18, tint: 0.02,
+        brightness: 0, contrast: 0.15, shadows: 0.05, saturation: 1.08
+    };
+    var picture = loadPicture();
+    var picturePanelOpen = false;
+    var pictureTimer = null;
+    var pictureHeld = false; // "hold to compare" shows the original picture
+
+    function loadPicture() {
+        var result = { enabled: false };
+        Object.keys(CAM_FIX).forEach(function (k) { result[k] = CAM_FIX[k]; });
+        try {
+            var parsed = JSON.parse(localStorage.getItem(PICTURE_KEY) || 'null');
+            if (parsed) Object.keys(result).forEach(function (k) {
+                if (typeof parsed[k] === typeof result[k]) result[k] = parsed[k];
+            });
+        } catch (e) { /* ignore */ }
+        return result;
+    }
+
+    function savePicture() {
+        try { localStorage.setItem(PICTURE_KEY, JSON.stringify(picture)); } catch (e) { /* ignore */ }
+    }
+
+    function syncPicture(immediate) {
+        clearTimeout(pictureTimer);
+        var run = function () {
+            var settings = {};
+            Object.keys(picture).forEach(function (k) { settings[k] = picture[k]; });
+            settings.enabled = picture.enabled && !pictureHeld;
+            post(['mpv-set-picture', settings]);
+        };
+        if (immediate) run(); else pictureTimer = setTimeout(run, 60);
+    }
+
     function load() {
         try {
             var parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
@@ -153,20 +202,26 @@
         '#sbr-overlay .sbr-h-sw{left:-7px;bottom:-7px;cursor:nesw-resize}#sbr-overlay .sbr-h-se{right:-7px;bottom:-7px;cursor:nwse-resize}' +
         '#sbr-overlay .sbr-del{position:absolute;right:-10px;top:-30px;width:22px;height:22px;border-radius:11px;border:0;background:#e5484d;color:#fff;font:700 14px/22px sans-serif;cursor:pointer;padding:0}' +
         '#sbr-overlay .sbr-hint{position:absolute;left:50%;top:24px;transform:translateX(-50%);padding:8px 14px;border-radius:8px;background:rgba(12,11,17,0.85);color:#fff;font:13px/1.4 sans-serif;pointer-events:none;text-align:center}' +
-        '#sbr-panel{position:fixed;right:16px;bottom:96px;z-index:2147483001;width:300px;padding:14px;border-radius:12px;background:rgba(18,17,26,0.96);color:#fff;font:13px/1.4 sans-serif;box-shadow:0 8px 32px rgba(0,0,0,0.6)}' +
-        '#sbr-panel h3{margin:0 0 10px;font-size:15px;font-weight:600}' +
-        '#sbr-panel .sbr-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0}' +
-        '#sbr-panel label{display:flex;align-items:center;gap:8px;cursor:pointer}' +
-        '#sbr-panel select,#sbr-panel input[type=range]{flex:1;min-width:0}' +
-        '#sbr-panel select{background:#2a2838;color:#fff;border:1px solid #444;border-radius:6px;padding:4px}' +
-        '#sbr-panel button.sbr-btn{flex:1;padding:8px;border:0;border-radius:8px;background:#7b5bf5;color:#fff;font:600 13px sans-serif;cursor:pointer}' +
-        '#sbr-panel button.sbr-btn.sbr-sec{background:#2a2838}' +
-        '#sbr-panel .sbr-muted{color:#aaa;font-size:12px}' +
-        '#sbr-panel .sbr-list{max-height:120px;overflow:auto;margin:6px 0}' +
-        '#sbr-panel .sbr-item{padding:5px 8px;border-radius:6px;cursor:pointer;display:flex;justify-content:space-between}' +
-        '#sbr-panel .sbr-item.sbr-sel{background:#3b3550}' +
-        '#sbr-panel fieldset{border:1px solid #333;border-radius:8px;padding:6px 10px;margin:8px 0}' +
-        '#sbr-panel legend{padding:0 4px;color:#bbb;font-size:12px}' +
+        '.sbr-panel{position:fixed;right:16px;bottom:96px;z-index:2147483001;width:300px;padding:14px;border-radius:12px;background:rgba(18,17,26,0.96);color:#fff;font:13px/1.4 sans-serif;box-shadow:0 8px 32px rgba(0,0,0,0.6)}' +
+        '.sbr-panel h3{margin:0 0 10px;font-size:15px;font-weight:600}' +
+        '.sbr-panel .sbr-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0}' +
+        '.sbr-panel label{display:flex;align-items:center;gap:8px;cursor:pointer}' +
+        '.sbr-panel select,.sbr-panel input[type=range]{flex:1;min-width:0}' +
+        '.sbr-panel select{background:#2a2838;color:#fff;border:1px solid #444;border-radius:6px;padding:4px}' +
+        '.sbr-panel button.sbr-btn{flex:1;padding:8px;border:0;border-radius:8px;background:#7b5bf5;color:#fff;font:600 13px sans-serif;cursor:pointer}' +
+        '.sbr-panel button.sbr-btn.sbr-sec{background:#2a2838}' +
+        '.sbr-panel .sbr-muted{color:#aaa;font-size:12px}' +
+        '.sbr-panel .sbr-list{max-height:120px;overflow:auto;margin:6px 0}' +
+        '.sbr-panel .sbr-item{padding:5px 8px;border-radius:6px;cursor:pointer;display:flex;justify-content:space-between}' +
+        '.sbr-panel .sbr-item.sbr-sel{background:#3b3550}' +
+        '.sbr-panel fieldset{border:1px solid #333;border-radius:8px;padding:6px 10px;margin:8px 0}' +
+        '.sbr-panel legend{padding:0 4px;color:#bbb;font-size:12px}' +
+        '.sbr-panel{max-height:calc(100vh - 120px);overflow:auto;box-sizing:border-box}' +
+        '.sbr-panel .sbr-slider{margin:8px 0}' +
+        '.sbr-panel .sbr-slider input[type=range]{width:100%;accent-color:#7b5bf5}' +
+        '.sbr-panel .sbr-slider-head{display:flex;justify-content:space-between;align-items:center}' +
+        '.sbr-panel button.sbr-value{background:none;border:0;color:#bbb;font:12px monospace;cursor:pointer;padding:0 2px}' +
+        '.sbr-panel button.sbr-value:hover{color:#fff;text-decoration:underline}' +
         '.sbr-button-active{background-color:rgba(123,91,245,0.35)!important}';
 
     function injectStyles() {
@@ -182,10 +237,19 @@
         '<rect x="3" y="5" width="18" height="14" rx="2"/><rect x="6" y="12" width="12" height="4" rx="1" fill="currentColor" opacity="0.45" stroke="none"/>' +
         '<path d="M7 9h2M11 9h2M15 9h2" stroke-dasharray="1 2"/></svg>';
 
+    var PICTURE_ICON = '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
+        '<path d="M4 7h10M18 7h2M4 12h4M12 12h8M4 17h12M20 17h0"/>' +
+        '<circle cx="16" cy="7" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="17" r="2"/></svg>';
+
     function ensureButton() {
+        makeButton('sbr-button', 'Blur regions', ICON, function () { setPanel(!panelOpen); });
+        makeButton('sbr-picture-button', 'Picture settings', PICTURE_ICON, function () { setPicturePanel(!picturePanelOpen); });
+    }
+
+    function makeButton(id, title, icon, onClick) {
         if (!onPlayer()) return;
         var menu = document.querySelector('[class*="control-bar-buttons-menu-container"]');
-        if (!menu || menu.querySelector('#sbr-button')) return;
+        if (!menu || menu.querySelector('#' + id)) return;
         var sibling = null;
         var candidates = menu.querySelectorAll('[class*="control-bar-button"]');
         for (var i = 0; i < candidates.length; i++) {
@@ -193,12 +257,12 @@
         }
         sibling = sibling || candidates[0];
         var button = document.createElement('div');
-        button.id = 'sbr-button';
-        button.title = 'Blur regions';
+        button.id = id;
+        button.title = title;
         button.tabIndex = -1;
         button.className = sibling ? String(sibling.className).replace(/\bdisabled\b/g, '').trim() : '';
         if (!sibling) button.style.cssText = 'display:flex;align-items:center;justify-content:center;width:48px;height:48px;cursor:pointer;color:#fff';
-        button.innerHTML = ICON;
+        button.innerHTML = icon;
         var svg = button.firstChild;
         var siblingIcon = sibling && sibling.querySelector('svg');
         if (siblingIcon && siblingIcon.getAttribute('class')) {
@@ -210,7 +274,7 @@
         button.addEventListener('click', function (e) {
             e.preventDefault();
             e.stopPropagation();
-            setPanel(!panelOpen);
+            onClick();
         });
         menu.appendChild(button);
         updateButton();
@@ -219,14 +283,115 @@
     function updateButton() {
         var button = document.getElementById('sbr-button');
         if (button) button.classList.toggle('sbr-button-active', panelOpen || (state.enabled && state.regions.length > 0));
+        var pictureButton = document.getElementById('sbr-picture-button');
+        if (pictureButton) pictureButton.classList.toggle('sbr-button-active', picturePanelOpen || picture.enabled);
     }
 
     // ---------- panel ----------
     function setPanel(open) {
         panelOpen = open;
         if (!open) setEditing(false);
+        if (open && picturePanelOpen) { picturePanelOpen = false; renderPicturePanel(); }
         renderPanel();
         updateButton();
+    }
+
+    function setPicturePanel(open) {
+        picturePanelOpen = open;
+        if (open && panelOpen) setPanel(false);
+        renderPicturePanel();
+        updateButton();
+    }
+
+    function formatValue(value, step) {
+        return Number(value).toFixed(step < 0.01 ? 3 : 2);
+    }
+
+    function pictureChanged(immediate) {
+        savePicture();
+        syncPicture(immediate);
+        updateButton();
+    }
+
+    function renderPicturePanel() {
+        var old = document.getElementById('sbr-picture-panel');
+        if (old) old.remove();
+        if (!picturePanelOpen || !onPlayer()) return;
+
+        var rows = PICTURE_SLIDERS.map(function (def) {
+            var key = def[0], min = def[2], max = def[3], step = def[4], neutral = def[5];
+            var valueLabel = el('button', {
+                class: 'sbr-value', title: 'Click to reset to ' + neutral,
+                text: formatValue(picture[key], step)
+            });
+            var slider = el('input', {
+                type: 'range', min: String(min), max: String(max), step: String(step),
+                value: String(picture[key]),
+                oninput: function (e) {
+                    picture[key] = Number(e.target.value);
+                    valueLabel.textContent = formatValue(picture[key], step);
+                    if (!picture.enabled) { picture.enabled = true; enabledBox.checked = true; }
+                    pictureChanged(false);
+                }
+            });
+            valueLabel.addEventListener('click', function () {
+                picture[key] = neutral;
+                slider.value = String(neutral);
+                valueLabel.textContent = formatValue(neutral, step);
+                pictureChanged(true);
+            });
+            return el('div', { class: 'sbr-slider' }, [
+                el('div', { class: 'sbr-slider-head' }, [el('span', { text: def[1] }), valueLabel]),
+                slider
+            ]);
+        });
+
+        var enabledBox = el('input', {
+            type: 'checkbox', checked: picture.enabled,
+            onchange: function (e) { picture.enabled = e.target.checked; pictureChanged(true); }
+        });
+
+        function applyPreset(values) {
+            Object.keys(values).forEach(function (k) { picture[k] = values[k]; });
+            picture.enabled = true;
+            pictureChanged(true);
+            renderPicturePanel();
+        }
+
+        var neutralValues = {};
+        PICTURE_SLIDERS.forEach(function (def) { neutralValues[def[0]] = def[5]; });
+
+        var compare = el('button', { class: 'sbr-btn sbr-sec', text: 'Hold to compare' });
+        var startCompare = function (e) {
+            e.preventDefault();
+            if (!picture.enabled || pictureHeld) return;
+            pictureHeld = true; compare.textContent = 'Showing original'; syncPicture(true);
+        };
+        var endCompare = function () {
+            if (!pictureHeld) return;
+            pictureHeld = false; compare.textContent = 'Hold to compare'; syncPicture(true);
+        };
+        compare.addEventListener('mousedown', startCompare);
+        compare.addEventListener('mouseup', endCompare);
+        compare.addEventListener('mouseleave', endCompare);
+
+        var panel = el('div', { id: 'sbr-picture-panel', class: 'sbr-panel' }, [
+            el('h3', { text: 'Picture' }),
+            el('div', { class: 'sbr-row' }, [
+                el('label', null, [enabledBox, el('span', { text: 'Picture adjustments on' })])
+            ]),
+            el('div', { class: 'sbr-row' }, [
+                el('button', { class: 'sbr-btn', text: 'Cam fix', onclick: function () { applyPreset(CAM_FIX); } }),
+                el('button', { class: 'sbr-btn sbr-sec', text: 'Neutral', onclick: function () { applyPreset(neutralValues); } })
+            ]),
+            el('div', { class: 'sbr-sliders' }, rows),
+            el('div', { class: 'sbr-row' }, [compare]),
+            el('div', { class: 'sbr-muted', text: 'Changes apply instantly to every video. Click a number to reset that slider. While this is on, it replaces any shaders loaded from your mpv config.' })
+        ]);
+        ['mousedown', 'mouseup', 'click', 'dblclick', 'wheel', 'keydown'].forEach(function (type) {
+            panel.addEventListener(type, function (e) { e.stopPropagation(); });
+        });
+        document.body.appendChild(panel);
     }
 
     function el(tag, attrs, children) {
@@ -317,7 +482,7 @@
             ]);
         }
 
-        var panel = el('div', { id: 'sbr-panel' }, [
+        var panel = el('div', { id: 'sbr-panel', class: 'sbr-panel' }, [
             el('h3', { text: 'Blur regions' }),
             el('div', { class: 'sbr-row' }, [
                 el('label', null, [
@@ -505,6 +670,10 @@
             panelOpen = false;
             setEditing(false);
             renderPanel();
+            picturePanelOpen = false;
+            renderPicturePanel();
+        } else {
+            syncPicture(true);
         }
         syncShell(true);
     }

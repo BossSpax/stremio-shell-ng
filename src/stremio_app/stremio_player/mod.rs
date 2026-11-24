@@ -1,4 +1,5 @@
 pub mod blur_regions;
+pub mod picture;
 pub mod player;
 pub use player::Player;
 pub mod communication;

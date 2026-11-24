@@ -37,6 +37,7 @@ use winapi::um::{
 };
 
 use crate::stremio_app::stremio_player::blur_regions::{self, SharedBlurState};
+use crate::stremio_app::stremio_player::picture;
 use crate::stremio_app::stremio_player::{
     CmdVal, InMsg, InMsgArgs, InMsgFn, PlayerEnded, PlayerEvent, PlayerProprChange, PlayerResponse,
     PropKey, PropVal,
@@ -945,6 +946,8 @@ fn create_message_thread(
             }
         }
 
+        let mut picture_state = picture::PictureState::default();
+
         // -- InMsg handler loop --
 
         for msg in in_msg_receiver.iter() {
@@ -1020,6 +1023,9 @@ fn create_message_thread(
                         enabled,
                         &blur_state,
                     );
+                }
+                InMsg(InMsgFn::MpvSetPicture, InMsgArgs::Picture(settings)) => {
+                    picture_state.apply(&mpv, &settings);
                 }
                 InMsg(InMsgFn::MpvSetBlurRegions, InMsgArgs::Regions(regions)) => {
                     blur_state.lock().expect("cannot lock blur state").regions = regions;
