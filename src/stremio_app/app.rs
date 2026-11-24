@@ -482,9 +482,9 @@ impl MainWindow {
                         web_tx_web
                             .send(RPCResponse::visibility_change(true, 1, false))
                             .ok();
-                        updater_tx_web
-                            .send("check_for_update".to_owned())
-                            .expect("Failed to send value to updater channel");
+                        // Fork: no auto-update. An official update would replace this
+                        // build's features; update by rebasing the fork instead.
+                        let _ = &updater_tx_web;
 
                         open_sender_web.send(OpenRequest::Ready).ok();
                     }

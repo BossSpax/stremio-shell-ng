@@ -19,6 +19,8 @@ pub const UPDATE_ENDPOINT: [&str; 3] = [
 pub const STREMIO_SERVER_DEV_MODE: &str = "STREMIO_SERVER_DEV_MODE";
 pub const SRV_BUFFER_SIZE: usize = 1024;
 pub const SERVER_IPC_KEY: &str = "SERVER_IPC_KEY";
+/// Fork: WebView2 profile to use (defaults to the installed Stremio's profile).
+pub const WEBVIEW_USER_DATA_ENV: &str = "STREMIO_WEBVIEW_USER_DATA";
 pub const SRV_LOG_SIZE: usize = 20;
 
 pub const WARNING_URL: &str = "https://www.stremio.com/warning#";

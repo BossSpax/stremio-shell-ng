@@ -1,4 +1,4 @@
-use crate::stremio_app::constants::{safe_url, SERVER_IPC_KEY};
+use crate::stremio_app::constants::{safe_url, SERVER_IPC_KEY, WEBVIEW_USER_DATA_ENV};
 use crate::stremio_app::ipc;
 use native_windows_gui::{self as nwg, PartialUi};
 use once_cell::unsync::OnceCell;
@@ -26,6 +26,7 @@ const APPCOMMAND_MEDIA_PLAY_PAUSE: u32 = 14;
 const APPCOMMAND_MEDIA_PLAY: u32 = 46;
 const APPCOMMAND_MEDIA_PAUSE: u32 = 47;
 const VK_F: u32 = b'F' as u32;
+const BLUR_REGIONS_SCRIPT: &str = include_str!("blur_regions.js");
 
 #[derive(Default)]
 pub struct WebView {
@@ -133,8 +134,16 @@ impl PartialUi for WebView {
         let controller_clone = data.controller.clone();
         let endpoint = data.endpoint.clone();
         let webview_flags = "--autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
-        let result = webview2::EnvironmentBuilder::new()
-            .with_additional_browser_arguments(webview_flags)
+        // Fork: share the installed Stremio's WebView2 profile so local library,
+        // watch progress and addons carry over without copying or reading them.
+        let user_data_folder = std::env::var_os(WEBVIEW_USER_DATA_ENV).map(std::path::PathBuf::from);
+        let mut builder = webview2::EnvironmentBuilder::new()
+            .with_additional_browser_arguments(webview_flags);
+        if let Some(folder) = user_data_folder.as_deref() {
+            println!("Using WebView2 user data folder {}", folder.display());
+            builder = builder.with_user_data_folder(folder);
+        }
+        let result = builder
             .build(move |env| {
                 env.expect("Cannot obtain webview environment")
                     .create_controller(hwnd, move |controller| {
@@ -268,6 +277,8 @@ impl PartialUi for WebView {
                             window.addEventListener("load", function() {if(initShellComm) try { initShellComm() } catch(e) {}}, false)
 
                             "##, |_| Ok(())).expect("Cannot add script to webview");
+                            wv.execute_script(BLUR_REGIONS_SCRIPT, |_| Ok(()))
+                                .expect("Cannot add blur regions script to webview");
                             Ok(())
                         }).expect("Cannot add content loading");
 

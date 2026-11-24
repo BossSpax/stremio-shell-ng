@@ -4,6 +4,8 @@ use parse_display::{Display, FromStr};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+use super::blur_regions::BlurRegion;
+
 // Responses
 const JSON_RESPONSES: [&str; 3] = ["track-list", "video-params", "metadata"];
 
@@ -160,6 +162,7 @@ pub enum InMsgFn {
     MpvCommand,
     MpvObserveProp,
     MpvSetGpuVideoProcessing,
+    MpvSetBlurRegions,
 }
 stringable!(InMsgFn);
 // Bool
@@ -357,6 +360,7 @@ pub enum InMsgArgs {
     Cmd(CmdVal),
     ObProp(PropKey),
     Flag(bool),
+    Regions(Vec<BlurRegion>),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

@@ -36,6 +36,7 @@ use winapi::um::{
     },
 };
 
+use crate::stremio_app::stremio_player::blur_regions::{self, SharedBlurState};
 use crate::stremio_app::stremio_player::{
     CmdVal, InMsg, InMsgArgs, InMsgFn, PlayerEnded, PlayerEvent, PlayerProprChange, PlayerResponse,
     PropKey, PropVal,
@@ -388,15 +389,19 @@ impl PartialUi for Player {
             Arc::clone(&video_ready_state),
         );
         let gpu_video_processing = Arc::new(AtomicBool::new(false));
+        let blur_state = SharedBlurState::default();
         let _display_thread = create_display_output_thread(
             Arc::clone(&mpv),
             window_handle as isize,
             Arc::clone(&gpu_video_processing),
+            Arc::clone(&blur_state),
+            rpc_response_sender.clone(),
         );
         let _message_thread = create_message_thread(
             mpv,
             window_handle as isize,
             gpu_video_processing,
+            blur_state,
             observe_property_sender,
             in_msg_receiver,
             rpc_response_sender,
@@ -475,20 +480,102 @@ fn create_display_output_thread(
     mpv: Arc<Mpv>,
     window_handle: isize,
     gpu_video_processing: Arc<AtomicBool>,
+    blur_state: SharedBlurState,
+    rpc_response_sender: Sender<String>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut last_state = None;
+        let mut last_video_info = None;
 
         loop {
             let state = current_display_output_state(&mpv, window_handle as HWND);
             let gpu = gpu_video_processing.load(Ordering::Relaxed);
             if last_state != Some((state, gpu)) {
-                apply_display_output_mode(&mpv, state, gpu);
+                apply_display_output_mode(&mpv, state, gpu, &blur_state);
                 last_state = Some((state, gpu));
+            } else {
+                // Video size changes (new file) need the blur graph rebuilt in pixels.
+                apply_video_filters(&mpv, state, gpu, &blur_state);
             }
-            thread::sleep(Duration::from_millis(500));
+
+            // Tell the injected blur editor where the video sits inside the window.
+            let video_info = blur_video_info(&mpv);
+            if video_info != last_video_info {
+                if let Some(info) = &video_info {
+                    let message = RPCResponse::response_message(Some(
+                        serde_json::json!(["blur-video-info", info]),
+                    ));
+                    rpc_response_sender.send(message).ok();
+                }
+                last_video_info = video_info;
+            }
+            thread::sleep(Duration::from_millis(250));
         }
     })
+}
+
+fn blur_video_info(mpv: &Mpv) -> Option<serde_json::Value> {
+    let osd = mpv.get_property::<String>("osd-dimensions").ok()?;
+    let osd = serde_json::from_str::<serde_json::Value>(&osd).ok()?;
+    let (width, height) = current_video_size(mpv).unwrap_or((0, 0));
+    Some(serde_json::json!({ "osd": osd, "width": width, "height": height }))
+}
+
+fn current_video_size(mpv: &Mpv) -> Option<(i64, i64)> {
+    let video_params = mpv.get_property::<String>("video-params").ok()?;
+    let video_params = serde_json::from_str::<serde_json::Value>(&video_params).ok()?;
+    let width = video_params.get("w").and_then(serde_json::Value::as_i64)?;
+    let height = video_params.get("h").and_then(serde_json::Value::as_i64)?;
+    (width > 0 && height > 0).then_some((width, height))
+}
+
+/// Builds the `vf` chain (blur regions + optional GPU upscaling) and the decoder mode,
+/// touching mpv only when either actually changes.
+fn apply_video_filters(
+    mpv: &Mpv,
+    state: DisplayOutputState,
+    gpu_video_processing: bool,
+    blur_state: &SharedBlurState,
+) {
+    let mut blur = blur_state.lock().expect("cannot lock blur state");
+    let blur_graph = if blur.active() {
+        match current_video_size(mpv) {
+            Some((width, height)) => blur_regions::filter_graph(&blur.regions, width, height),
+            // Between files: keep whatever is applied until the new size is known.
+            None if blur.applied_vf.is_some() => return,
+            None => None,
+        }
+    } else {
+        None
+    };
+
+    let mut entries = Vec::new();
+    if let Some(graph) = &blur_graph {
+        entries.push(blur_regions::mpv_vf_entry(graph));
+    } else if gpu_video_processing {
+        // d3d11vpp needs GPU frames, so it cannot be combined with the software blur.
+        let scale = state.scale_percent as f64 / 100.0;
+        let mut vf = format!("d3d11vpp=scaling-mode=nvidia:scale={scale:.2}");
+        if state.mode == DisplayOutputMode::Hdr {
+            vf.push_str(":format=x2bgr10:nvidia-true-hdr");
+        }
+        entries.push(vf);
+    }
+    let vf = entries.join(",");
+
+    let hwdec = blur.effective_hwdec();
+    if blur.applied_hwdec.as_deref() != Some(hwdec.as_str()) {
+        if let Err(error) = mpv.set_property("hwdec", hwdec.as_str()) {
+            eprintln!("mpv: cannot set hwdec={hwdec}: {error:?}");
+        }
+        blur.applied_hwdec = Some(hwdec);
+    }
+    if blur.applied_vf.as_deref() != Some(vf.as_str()) {
+        if let Err(error) = mpv.set_property("vf", vf.as_str()) {
+            eprintln!("mpv: cannot set vf={vf}: {error:?}");
+        }
+        blur.applied_vf = Some(vf);
+    }
 }
 
 fn current_display_output_state(mpv: &Mpv, window_handle: HWND) -> DisplayOutputState {
@@ -542,19 +629,15 @@ fn current_monitor_height(window_handle: HWND) -> Option<f64> {
     Some((monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top) as f64)
 }
 
-fn apply_display_output_mode(mpv: &Mpv, state: DisplayOutputState, gpu_video_processing: bool) {
+fn apply_display_output_mode(
+    mpv: &Mpv,
+    state: DisplayOutputState,
+    gpu_video_processing: bool,
+    blur_state: &SharedBlurState,
+) {
     // Target colorspace follows the display so native HDR still passes through; the RTX
     // HDR filter is the opt-in part and only makes sense on an HDR display.
-    let vf = if gpu_video_processing {
-        let scale = state.scale_percent as f64 / 100.0;
-        let mut vf = format!("d3d11vpp=scaling-mode=nvidia:scale={scale:.2}");
-        if state.mode == DisplayOutputMode::Hdr {
-            vf.push_str(":format=x2bgr10:nvidia-true-hdr");
-        }
-        vf
-    } else {
-        String::new()
-    };
+    apply_video_filters(mpv, state, gpu_video_processing, blur_state);
     let color = match state.mode {
         DisplayOutputMode::Hdr | DisplayOutputMode::Auto => [
             ("d3d11-output-csp", "auto"),
@@ -570,7 +653,7 @@ fn apply_display_output_mode(mpv: &Mpv, state: DisplayOutputState, gpu_video_pro
         ],
     };
 
-    for (name, value) in std::iter::once(("vf", vf.as_str())).chain(color) {
+    for (name, value) in color {
         if let Err(error) = mpv.set_property(name, value) {
             eprintln!("mpv: cannot set {name}={value}: {error:?}");
         }
@@ -791,6 +874,7 @@ fn create_message_thread(
     mpv: Arc<Mpv>,
     window_handle: isize,
     gpu_video_processing: Arc<AtomicBool>,
+    blur_state: SharedBlurState,
     observe_property_sender: Sender<ObserveProperty>,
     in_msg_receiver: Receiver<String>,
     rpc_response_sender: Sender<String>,
@@ -892,19 +976,39 @@ fn create_message_thread(
                     set_property(name, value, &mpv);
                 }
                 InMsg(InMsgFn::MpvSetProp, InMsgArgs::StProp(name, PropVal::Str(value))) => {
-                    let is_vo = name.to_string() == "vo";
+                    let prop_name = name.to_string();
+                    if prop_name == "hwdec" {
+                        // Blur regions may need a copy-back decoder; remember the user's
+                        // choice and let apply_video_filters pick the effective value.
+                        let mut blur = blur_state.lock().expect("cannot lock blur state");
+                        blur.requested_hwdec = Some(value);
+                        drop(blur);
+                        apply_video_filters(
+                            &mpv,
+                            current_display_output_state(&mpv, window_handle as HWND),
+                            gpu_video_processing.load(Ordering::Relaxed),
+                            &blur_state,
+                        );
+                        continue;
+                    }
+                    let is_vo = prop_name == "vo";
                     let value = if is_vo {
                         with_gpu_next_fallback(value)
                     } else {
                         value
                     };
                     set_property(name, value, &mpv);
+                    if prop_name == "vf" {
+                        // The web UI replaced the chain; re-add ours on the next pass.
+                        blur_state.lock().expect("cannot lock blur state").applied_vf = None;
+                    }
                     // vo reinit reverts color props to defaults; re-assert for the current display.
                     if is_vo {
                         apply_display_output_mode(
                             &mpv,
                             current_display_output_state(&mpv, window_handle as HWND),
                             gpu_video_processing.load(Ordering::Relaxed),
+                            &blur_state,
                         );
                     }
                 }
@@ -914,6 +1018,16 @@ fn create_message_thread(
                         &mpv,
                         current_display_output_state(&mpv, window_handle as HWND),
                         enabled,
+                        &blur_state,
+                    );
+                }
+                InMsg(InMsgFn::MpvSetBlurRegions, InMsgArgs::Regions(regions)) => {
+                    blur_state.lock().expect("cannot lock blur state").regions = regions;
+                    apply_video_filters(
+                        &mpv,
+                        current_display_output_state(&mpv, window_handle as HWND),
+                        gpu_video_processing.load(Ordering::Relaxed),
+                        &blur_state,
                     );
                 }
                 InMsg(InMsgFn::MpvCommand, InMsgArgs::Cmd(cmd)) => {

@@ -12,7 +12,7 @@ use crate::stremio_app::{
     acquire_single_instance,
     constants::{
         DEV_ENDPOINT, IPC_ATTEMPTS, IPC_PATH, IPC_RETRY_DELAY, SERVER_IPC_KEY, STA_ENDPOINT,
-        STREMIO_SERVER_DEV_MODE, WEB_ENDPOINT,
+        STREMIO_SERVER_DEV_MODE, WEBVIEW_USER_DATA_ENV, WEB_ENDPOINT,
     },
     MainWindow, SingleInstance,
 };
@@ -51,6 +51,21 @@ struct Opt {
         help = "Secret key for communication with the server. By default it is randomly generrated on startup"
     )]
     server_ipc_key: String,
+    #[clap(
+        long,
+        help = "WebView2 profile folder. Defaults to the installed Stremio's profile so local data carries over"
+    )]
+    webview_user_data: Option<std::path::PathBuf>,
+}
+
+/// The official installer's WebView2 profile: `<install dir>\stremio-shell-ng.exe.WebView2`.
+fn installed_stremio_profile() -> Option<std::path::PathBuf> {
+    let local = std::env::var_os("LOCALAPPDATA")?;
+    let profile = Path::new(&local)
+        .join("Programs")
+        .join("Stremio")
+        .join("stremio-shell-ng.exe.WebView2");
+    profile.is_dir().then_some(profile)
 }
 
 fn main() {
@@ -66,6 +81,10 @@ fn main() {
             opt.server_ipc_key.clone()
         },
     );
+
+    if let Some(profile) = opt.webview_user_data.clone().or_else(installed_stremio_profile) {
+        std::env::set_var(WEBVIEW_USER_DATA_ENV, profile);
+    }
 
     let command = opt
         .command
